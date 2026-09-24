@@ -563,6 +563,7 @@ void Main::print_help(const char *p_binary) {
 	print_help_option("--text-driver <driver>", "Text driver (used for font rendering, bidirectional support and shaping).\n");
 	print_help_option("--tablet-driver <driver>", "Pen tablet input driver.\n");
 	print_help_option("--headless", "Enable headless mode (--display-driver headless --audio-driver Dummy). Useful for servers and with --script.\n");
+	print_help_option("--offline", "Run with hidden Windows while keeping the normal graphics path (Windows only; does not disable networking).\n");
 	print_help_option("--log-file <file>", "Write output/error log to the specified path instead of the default location defined by the project.\n");
 	print_help_option("", "<file> path should be absolute or relative to the project directory.\n");
 	print_help_option("--write-movie <file>", "Write a video to the specified path (usually with .avi or .png extension).\n");
@@ -1075,6 +1076,11 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 
 	bool delta_smoothing_override = false;
 	bool load_shell_env = false;
+	bool offline_mode_requested = false;
+	bool explicit_headless_requested = false;
+	bool explicit_headless_display_driver_requested = false;
+	bool explicit_dummy_renderer_requested = false;
+	bool embed_parent_requested = false;
 
 	String rendering_driver = "";
 	String rendering_method = "";
@@ -1121,6 +1127,10 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 #endif
 
 #ifdef TOOLS_ENABLED
+		if (!adding_user_args && arg == "--offline") {
+			forwardable_cli_arguments[CLI_SCOPE_TOOL].push_back(arg);
+			forwardable_cli_arguments[CLI_SCOPE_PROJECT].push_back(arg);
+		}
 		if (arg == "--debug" ||
 				arg == "--verbose" ||
 				arg == "--disable-crash-handler") {
@@ -1234,6 +1244,7 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 
 			if (N) {
 				display_driver = N->get();
+				explicit_headless_display_driver_requested |= display_driver == NULL_DISPLAY_DRIVER;
 
 				bool found = false;
 				for (int i = 0; i < DisplayServer::get_create_function_count(); i++) {
@@ -1269,6 +1280,7 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 		} else if (arg == "--rendering-method") {
 			if (N) {
 				rendering_method = N->get();
+				explicit_dummy_renderer_requested |= rendering_method == "dummy";
 				N = N->next();
 			} else {
 				OS::get_singleton()->print("Missing renderer name argument, aborting.\n");
@@ -1277,6 +1289,7 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 		} else if (arg == "--rendering-driver") {
 			if (N) {
 				rendering_driver = N->get();
+				explicit_dummy_renderer_requested |= rendering_driver == "dummy";
 				rendering_driver_source = OS::RenderingSource::RENDERING_SOURCE_COMMANDLINE;
 				N = N->next();
 			} else {
@@ -1452,8 +1465,12 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 
 		} else if (arg == "--headless") { // enable headless mode (no audio, no rendering).
 
+			explicit_headless_requested = true;
 			audio_driver = NULL_AUDIO_DRIVER;
 			display_driver = NULL_DISPLAY_DRIVER;
+
+		} else if (arg == "--offline") {
+			offline_mode_requested = true;
 
 		} else if (arg == "--embedded") { // Enable embedded mode.
 #ifdef MACOS_ENABLED
@@ -2015,6 +2032,7 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 #endif // TOOLS_ENABLED
 		} else if (arg == "--wid") {
 			if (N) {
+				embed_parent_requested = true;
 				init_embed_parent_window_id = N->get().to_int();
 				if (init_embed_parent_window_id == 0) {
 					OS::get_singleton()->print("<window_id> argument for --wid <window_id> must be different then 0.\n");
@@ -2037,6 +2055,21 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 		}
 
 		I = N;
+	}
+
+	if (offline_mode_requested) {
+		if (explicit_headless_requested || explicit_headless_display_driver_requested || explicit_dummy_renderer_requested || embed_parent_requested) {
+			OS::get_singleton()->print("Error: --offline cannot be combined with --headless, a headless/dummy graphics driver, or --wid. Aborting.\n");
+			goto error;
+		}
+#ifdef WINDOWS_ENABLED
+		if (OS::get_singleton()->initialize_offline_mode() != OK) {
+			goto error;
+		}
+#else
+		OS::get_singleton()->print("Error: --offline is only supported on Windows. Aborting.\n");
+		goto error;
+#endif
 	}
 
 #ifdef TOOLS_ENABLED
@@ -2743,6 +2776,11 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 		}
 	}
 
+	if (OS::get_singleton()->is_offline_mode() && (rendering_method == "dummy" || rendering_driver == "dummy" || window_mode == DisplayServerEnums::WINDOW_MODE_EXCLUSIVE_FULLSCREEN)) {
+		OS::get_singleton()->print("Error: --offline requires a real graphics renderer and does not support exclusive fullscreen. Aborting.\n");
+		goto error;
+	}
+
 	OS::get_singleton()->_allow_hidpi = GLOBAL_DEF("display/window/dpi/allow_hidpi", true);
 	OS::get_singleton()->_allow_layered = GLOBAL_DEF_RST("display/window/per_pixel_transparency/allowed", false);
 
@@ -3255,6 +3293,10 @@ Error Main::setup2(bool p_show_boot_logo) {
 
 		if (display_driver.is_empty()) {
 			display_driver = GLOBAL_GET("display/display_server/driver");
+		}
+		if (OS::get_singleton()->is_offline_mode() && display_driver == NULL_DISPLAY_DRIVER) {
+			ERR_PRINT("--offline cannot use the headless display driver.");
+			return ERR_INVALID_PARAMETER;
 		}
 
 		int display_driver_idx = -1;

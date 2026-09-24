@@ -162,6 +162,10 @@ static void update_ime_form_positions(HIMC p_himc, const Point2i &p_pos) {
 }
 
 bool DisplayServerWindows::has_feature(DisplayServerEnums::Feature p_feature) const {
+	if (_is_offline_mode() && (p_feature == DisplayServerEnums::FEATURE_WINDOW_EMBEDDING || p_feature == DisplayServerEnums::FEATURE_STATUS_INDICATOR || p_feature == DisplayServerEnums::FEATURE_EMOJI_AND_SYMBOL_PICKER)) {
+		return false;
+	}
+
 	switch (p_feature) {
 #ifndef DISABLE_DEPRECATED
 		case DisplayServerEnums::FEATURE_GLOBAL_MENU: {
@@ -253,7 +257,24 @@ Vector2i DisplayServerWindows::_get_screen_expand_offset(int p_screen) const {
 	}
 }
 
+bool DisplayServerWindows::_is_offline_mode() const {
+	return OS::get_singleton()->is_offline_mode();
+}
+
+void DisplayServerWindows::_show_window(HWND p_window, int p_command) const {
+	if (!_is_offline_mode()) {
+		ShowWindow(p_window, p_command);
+	}
+}
+
 void DisplayServerWindows::_set_mouse_mode_impl(DisplayServerEnums::MouseMode p_mode) {
+	if (_is_offline_mode()) {
+		ReleaseCapture();
+		ClipCursor(nullptr);
+		_register_raw_input_devices(DisplayServerEnums::INVALID_WINDOW_ID);
+		return;
+	}
+
 	if (p_mode == DisplayServerEnums::MOUSE_MODE_HIDDEN || p_mode == DisplayServerEnums::MOUSE_MODE_CAPTURED || p_mode == DisplayServerEnums::MOUSE_MODE_CONFINED_HIDDEN) {
 		// Hide cursor before moving.
 		if (hCursor == nullptr) {
@@ -952,7 +973,7 @@ bool DisplayServerWindows::_try_create_shortcut() {
 }
 
 DisplayServerEnums::NotificationID DisplayServerWindows::send_toast_notification(const String &p_title, const String &p_text, const Ref<Texture2D> &p_image, const Callable &p_callback) {
-	if (!has_winrt_queue) {
+	if (_is_offline_mode() || !has_winrt_queue) {
 		return DisplayServerEnums::INVALID_NOTIFICATION_ID;
 	}
 	if (!_try_create_shortcut()) {
@@ -971,6 +992,21 @@ Error DisplayServerWindows::_file_dialog_with_options_show(const String &p_title
 	_THREAD_SAFE_METHOD_
 
 	ERR_FAIL_INDEX_V(int(p_mode), DisplayServerEnums::FILE_DIALOG_MODE_SAVE_MAX, FAILED);
+	if (_is_offline_mode()) {
+		if (p_callback.is_valid()) {
+			MutexLock lock(file_dialog_mutex);
+			FileDialogCallback cb;
+			cb.callback = p_callback;
+			cb.status = false;
+			cb.files = Vector<String>();
+			cb.index = 0;
+			cb.options = Dictionary();
+			cb.opt_in_cb = p_options_in_cb;
+			pending_cbs.push_back(cb);
+		}
+		return OK;
+	}
+
 	FileDialogData *fd = memnew(FileDialogData);
 	if (windows.has(p_window_id) && !windows[p_window_id].is_popup) {
 		fd->hwnd_owner = windows[p_window_id].hWnd;
@@ -1092,6 +1128,10 @@ bool DisplayServerWindows::mouse_is_mode_override_enabled() const {
 
 void DisplayServerWindows::warp_mouse(const Point2i &p_position) {
 	_THREAD_SAFE_METHOD_
+
+	if (_is_offline_mode()) {
+		return;
+	}
 
 	DisplayServerEnums::WindowID window_id = _get_focused_window_or_popup();
 
@@ -2036,25 +2076,27 @@ void DisplayServerWindows::show_window(DisplayServerEnums::WindowID p_id) {
 	}
 	wd.initialized = true;
 
-	if (wd.maximized) {
-		ShowWindow(wd.hWnd, SW_SHOWMAXIMIZED);
-		SetForegroundWindow(wd.hWnd); // Slightly higher priority.
-		SetFocus(wd.hWnd); // Set keyboard focus.
-	} else if (wd.minimized) {
-		ShowWindow(wd.hWnd, SW_SHOWMINIMIZED);
-	} else if (wd.no_focus) {
-		// https://docs.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-showwindow
-		ShowWindow(wd.hWnd, SW_SHOWNA);
-	} else if (wd.is_popup) {
-		ShowWindow(wd.hWnd, SW_SHOWNA);
-		SetFocus(wd.hWnd); // Set keyboard focus.
-	} else {
-		ShowWindow(wd.hWnd, SW_SHOW);
-		SetForegroundWindow(wd.hWnd); // Slightly higher priority.
-		SetFocus(wd.hWnd); // Set keyboard focus.
+	if (!_is_offline_mode()) {
+		if (wd.maximized) {
+			ShowWindow(wd.hWnd, SW_SHOWMAXIMIZED);
+			SetForegroundWindow(wd.hWnd); // Slightly higher priority.
+			SetFocus(wd.hWnd); // Set keyboard focus.
+		} else if (wd.minimized) {
+			ShowWindow(wd.hWnd, SW_SHOWMINIMIZED);
+		} else if (wd.no_focus) {
+			// https://docs.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-showwindow
+			ShowWindow(wd.hWnd, SW_SHOWNA);
+		} else if (wd.is_popup) {
+			ShowWindow(wd.hWnd, SW_SHOWNA);
+			SetFocus(wd.hWnd); // Set keyboard focus.
+		} else {
+			ShowWindow(wd.hWnd, SW_SHOW);
+			SetForegroundWindow(wd.hWnd); // Slightly higher priority.
+			SetFocus(wd.hWnd); // Set keyboard focus.
+		}
 	}
 	if (_is_always_on_top_recursive(p_id)) {
-		SetWindowPos(wd.hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | ((wd.no_focus || wd.is_popup) ? SWP_NOACTIVATE : 0));
+		SetWindowPos(wd.hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | ((_is_offline_mode() || wd.no_focus || wd.is_popup) ? SWP_NOACTIVATE : 0));
 	}
 }
 
@@ -2364,9 +2406,14 @@ void DisplayServerWindows::window_set_current_screen(int p_screen, DisplayServer
 		Size2 size = screen_get_size(p_screen);
 		Vector2i off = (wd.multiwindow_fs || (!wd.fullscreen && wd.borderless && wd.maximized)) ? _get_screen_expand_offset(p_screen) : Vector2i();
 
-		ShowWindow(wd.hWnd, SW_RESTORE);
+		_show_window(wd.hWnd, SW_RESTORE);
+		if (_is_offline_mode()) {
+			Rect2i usable = screen_get_usable_rect(p_screen);
+			pos = usable.position + _get_screens_origin();
+			size = usable.size;
+		}
 		MoveWindow(wd.hWnd, pos.x, pos.y, size.width + off.x, size.height + off.y, TRUE);
-		ShowWindow(wd.hWnd, SW_MAXIMIZE);
+		_show_window(wd.hWnd, SW_MAXIMIZE);
 	} else {
 		Rect2i srect = screen_get_usable_rect(p_screen);
 		Point2i wpos = window_get_position(p_window) - screen_get_position(window_get_current_screen(p_window));
@@ -2713,6 +2760,10 @@ void DisplayServerWindows::_get_window_style(bool p_main_window, bool p_initiali
 		r_style |= WS_VISIBLE;
 	}
 
+	if (_is_offline_mode()) {
+		r_style &= ~WS_VISIBLE;
+	}
+
 	r_style |= WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
 	r_style_ex |= WS_EX_ACCEPTFILES;
 
@@ -2758,7 +2809,7 @@ void DisplayServerWindows::_update_window_style(DisplayServerEnums::WindowID p_w
 		}
 	}
 
-	SetWindowPos(wd.hWnd, _is_always_on_top_recursive(p_window) ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | ((wd.no_focus || wd.is_popup) ? SWP_NOACTIVATE : 0));
+	SetWindowPos(wd.hWnd, _is_always_on_top_recursive(p_window) ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | ((_is_offline_mode() || wd.no_focus || wd.is_popup) ? SWP_NOACTIVATE : 0));
 
 	if (p_repaint) {
 		RECT rect;
@@ -2774,12 +2825,18 @@ void DisplayServerWindows::window_set_mode(DisplayServerEnums::WindowMode p_mode
 	ERR_FAIL_COND(!windows.has(p_window));
 	WindowData &wd = windows[p_window];
 
+	if (_is_offline_mode() && p_mode == DisplayServerEnums::WINDOW_MODE_EXCLUSIVE_FULLSCREEN) {
+		ERR_PRINT("Exclusive fullscreen is not supported with --offline.");
+		return;
+	}
+
 	if (p_mode != DisplayServerEnums::WINDOW_MODE_WINDOWED && wd.parent_hwnd) {
 		print_line("Embedded window only supports Windowed mode.");
 		return;
 	}
 
 	bool was_fullscreen = wd.fullscreen;
+	bool was_maximized = wd.maximized;
 	wd.was_fullscreen_pre_min = false;
 
 	if (p_mode == DisplayServerEnums::WINDOW_MODE_MAXIMIZED && wd.borderless) {
@@ -2812,10 +2869,10 @@ void DisplayServerWindows::window_set_mode(DisplayServerEnums::WindowMode p_mode
 			rect.bottom = wd.height;
 		}
 
-		ShowWindow(wd.hWnd, SW_RESTORE);
+		_show_window(wd.hWnd, SW_RESTORE);
 		MoveWindow(wd.hWnd, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, TRUE);
 
-		if (restore_mouse_trails > 1) {
+		if (!_is_offline_mode() && restore_mouse_trails > 1) {
 			SystemParametersInfoA(SPI_SETMOUSETRAILS, restore_mouse_trails, nullptr, 0);
 			restore_mouse_trails = 0;
 		}
@@ -2832,20 +2889,37 @@ void DisplayServerWindows::window_set_mode(DisplayServerEnums::WindowMode p_mode
 			rect.bottom = wd.height;
 		}
 
-		ShowWindow(wd.hWnd, SW_RESTORE);
+		_show_window(wd.hWnd, SW_RESTORE);
 		MoveWindow(wd.hWnd, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, TRUE);
 	}
 
 	if (p_mode == DisplayServerEnums::WINDOW_MODE_WINDOWED) {
-		ShowWindow(wd.hWnd, SW_NORMAL);
+		_show_window(wd.hWnd, SW_NORMAL);
 		wd.maximized = false;
 		wd.minimized = false;
+		if (_is_offline_mode() && was_maximized && wd.pre_fs_valid) {
+			MoveWindow(wd.hWnd, wd.pre_fs_rect.left, wd.pre_fs_rect.top, wd.pre_fs_rect.right - wd.pre_fs_rect.left, wd.pre_fs_rect.bottom - wd.pre_fs_rect.top, TRUE);
+		}
 	}
 
 	if (p_mode == DisplayServerEnums::WINDOW_MODE_MAXIMIZED && !wd.borderless) {
-		ShowWindow(wd.hWnd, SW_MAXIMIZE);
+		if (_is_offline_mode() && !was_maximized && !was_fullscreen) {
+			GetWindowRect(wd.hWnd, &wd.pre_fs_rect);
+			wd.pre_fs_valid = true;
+		}
+		_show_window(wd.hWnd, SW_MAXIMIZE);
 		wd.maximized = true;
 		wd.minimized = false;
+		if (_is_offline_mode()) {
+			int cs = window_get_current_screen(p_window);
+			Rect2i usable = screen_get_usable_rect(cs);
+			RECT rect = { usable.position.x, usable.position.y, usable.position.x + usable.size.x, usable.position.y + usable.size.y };
+			DWORD style = GetWindowLongPtr(wd.hWnd, GWL_STYLE);
+			DWORD style_ex = GetWindowLongPtr(wd.hWnd, GWL_EXSTYLE);
+			AdjustWindowRectEx(&rect, style, FALSE, style_ex);
+			Point2i origin = _get_screens_origin();
+			MoveWindow(wd.hWnd, rect.left + origin.x, rect.top + origin.y, rect.right - rect.left, rect.bottom - rect.top, TRUE);
+		}
 	}
 
 	if (p_mode == DisplayServerEnums::WINDOW_MODE_MAXIMIZED && wd.borderless) {
@@ -2854,7 +2928,7 @@ void DisplayServerWindows::window_set_mode(DisplayServerEnums::WindowMode p_mode
 			GetWindowRect(wd.hWnd, &wd.pre_fs_rect);
 			wd.pre_fs_valid = true;
 		}
-		ShowWindow(wd.hWnd, SW_NORMAL);
+		_show_window(wd.hWnd, SW_NORMAL);
 		wd.maximized = true;
 		wd.minimized = false;
 
@@ -2866,7 +2940,7 @@ void DisplayServerWindows::window_set_mode(DisplayServerEnums::WindowMode p_mode
 	}
 
 	if (p_mode == DisplayServerEnums::WINDOW_MODE_MINIMIZED) {
-		ShowWindow(wd.hWnd, SW_MINIMIZE);
+		_show_window(wd.hWnd, SW_MINIMIZE);
 		wd.maximized = false;
 		wd.minimized = true;
 		wd.was_fullscreen_pre_min = was_fullscreen;
@@ -2881,7 +2955,7 @@ void DisplayServerWindows::window_set_mode(DisplayServerEnums::WindowMode p_mode
 
 	if ((p_mode == DisplayServerEnums::WINDOW_MODE_FULLSCREEN || p_mode == DisplayServerEnums::WINDOW_MODE_EXCLUSIVE_FULLSCREEN) && !wd.fullscreen) {
 		if (wd.minimized || wd.maximized) {
-			ShowWindow(wd.hWnd, SW_RESTORE);
+			_show_window(wd.hWnd, SW_RESTORE);
 		}
 
 		// Save previous maximized stare.
@@ -2906,11 +2980,13 @@ void DisplayServerWindows::window_set_mode(DisplayServerEnums::WindowMode p_mode
 		Vector2i off = (wd.multiwindow_fs || (!wd.fullscreen && wd.borderless && wd.maximized)) ? _get_screen_expand_offset(cs) : Vector2i();
 		MoveWindow(wd.hWnd, pos.x, pos.y, size.width + off.x, size.height + off.y, TRUE);
 
-		// If the user has mouse trails enabled in windows, then sometimes the cursor disappears in fullscreen mode.
-		// Save number of trails so we can restore when exiting, then turn off mouse trails
-		SystemParametersInfoA(SPI_GETMOUSETRAILS, 0, &restore_mouse_trails, 0);
-		if (restore_mouse_trails > 1) {
-			SystemParametersInfoA(SPI_SETMOUSETRAILS, 0, nullptr, 0);
+		if (!_is_offline_mode()) {
+			// If the user has mouse trails enabled in windows, then sometimes the cursor disappears in fullscreen mode.
+			// Save number of trails so we can restore when exiting, then turn off mouse trails.
+			SystemParametersInfoA(SPI_GETMOUSETRAILS, 0, &restore_mouse_trails, 0);
+			if (restore_mouse_trails > 1) {
+				SystemParametersInfoA(SPI_SETMOUSETRAILS, 0, nullptr, 0);
+			}
 		}
 	}
 	_update_window_mouse_passthrough(p_window);
@@ -2976,7 +3052,7 @@ void DisplayServerWindows::window_set_flag(DisplayServerEnums::WindowFlags p_fla
 			}
 			_update_window_mouse_passthrough(p_window);
 			_update_window_style(p_window);
-			ShowWindow(wd.hWnd, (wd.no_focus || wd.is_popup) ? SW_SHOWNOACTIVATE : SW_SHOW); // Show the window.
+			_show_window(wd.hWnd, (wd.no_focus || wd.is_popup) ? SW_SHOWNOACTIVATE : SW_SHOW); // Show the window.
 		} break;
 		case DisplayServerEnums::WINDOW_FLAG_ALWAYS_ON_TOP: {
 			ERR_FAIL_COND_MSG(wd.transient_parent != DisplayServerEnums::INVALID_WINDOW_ID && p_enabled, "Transient windows can't become on top.");
@@ -3102,6 +3178,10 @@ bool DisplayServerWindows::window_get_flag(DisplayServerEnums::WindowFlags p_fla
 void DisplayServerWindows::window_request_attention(DisplayServerEnums::WindowID p_window) {
 	_THREAD_SAFE_METHOD_
 
+	if (_is_offline_mode()) {
+		return;
+	}
+
 	ERR_FAIL_COND(!windows.has(p_window));
 	const WindowData &wd = windows[p_window];
 
@@ -3179,6 +3259,10 @@ void DisplayServerWindows::window_set_taskbar_progress_state(DisplayServerEnums:
 
 void DisplayServerWindows::window_move_to_foreground(DisplayServerEnums::WindowID p_window) {
 	_THREAD_SAFE_METHOD_
+
+	if (_is_offline_mode()) {
+		return;
+	}
 
 	ERR_FAIL_COND(!windows.has(p_window));
 	WindowData &wd = windows[p_window];
@@ -3502,7 +3586,9 @@ bool DisplayServerWindows::get_swap_cancel_ok() {
 void DisplayServerWindows::enable_for_stealing_focus(ProcessID pid) {
 	_THREAD_SAFE_METHOD_
 
-	AllowSetForegroundWindow(pid);
+	if (!_is_offline_mode()) {
+		AllowSetForegroundWindow(pid);
+	}
 }
 
 struct WindowEnumData {
@@ -3678,6 +3764,10 @@ void DisplayServerWindows::_legacy_update_hdr_output_for_tracked_windows(bool p_
 Error DisplayServerWindows::embed_process(DisplayServerEnums::WindowID p_window, ProcessID p_pid, const Rect2i &p_rect, bool p_visible, bool p_grab_focus) {
 	_THREAD_SAFE_METHOD_
 
+	if (_is_offline_mode()) {
+		return ERR_UNAVAILABLE;
+	}
+
 	ERR_FAIL_COND_V(!windows.has(p_window), FAILED);
 
 	const WindowData &wd = windows[p_window];
@@ -3821,6 +3911,10 @@ static HRESULT CALLBACK win32_task_dialog_callback(HWND hwnd, UINT msg, WPARAM w
 
 Error DisplayServerWindows::dialog_show(String p_title, String p_description, Vector<String> p_buttons, const Callable &p_callback) {
 	_THREAD_SAFE_METHOD_
+
+	if (_is_offline_mode()) {
+		return ERR_UNAVAILABLE;
+	}
 
 	TASKDIALOGCONFIG config;
 	ZeroMemory(&config, sizeof(TASKDIALOGCONFIG));
@@ -3991,6 +4085,10 @@ static INT_PTR CALLBACK input_text_dialog_proc(HWND hWnd, UINT code, WPARAM wPar
 }
 
 Error DisplayServerWindows::dialog_input_text(String p_title, String p_description, String p_partial, const Callable &p_callback) {
+	if (_is_offline_mode()) {
+		return ERR_UNAVAILABLE;
+	}
+
 #pragma pack(push, 1)
 
 	// NOTE: Use default/placeholder coordinates here. Windows uses its own coordinate system
@@ -4225,6 +4323,9 @@ Key DisplayServerWindows::keyboard_get_label_from_physical(Key p_keycode) const 
 }
 
 void DisplayServerWindows::show_emoji_and_symbol_picker() const {
+	if (_is_offline_mode()) {
+		return;
+	}
 	if (!WinRTUtils::try_show_onecore_emoji_picker()) {
 		// Send Win + Period shortcut.
 
@@ -4874,6 +4975,10 @@ void DisplayServerWindows::window_set_icon(const Ref<Image> &p_icon, DisplayServ
 }
 
 DisplayServerEnums::IndicatorID DisplayServerWindows::create_status_indicator(const Ref<Texture2D> &p_icon, const String &p_tooltip, const Callable &p_callback) {
+	if (_is_offline_mode()) {
+		return DisplayServerEnums::INVALID_INDICATOR_ID;
+	}
+
 	IndicatorData idat;
 	if (p_icon.is_valid() && p_icon->get_width() > 0 && p_icon->get_height() > 0 && p_icon->get_image().is_valid()) {
 		Ref<Image> img = p_icon->get_image();
@@ -5787,7 +5892,7 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 			}
 			// When embedded, the window is a child of the parent and is not activated
 			// by default because it lacks native controls.
-			if (windows[window_id].parent_hwnd) {
+			if (windows[window_id].parent_hwnd && !_is_offline_mode()) {
 				SetFocus(windows[window_id].hWnd);
 				return MA_ACTIVATE;
 			}
@@ -6734,36 +6839,38 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 				Point2i screen_position = screen_get_position(screen_id);
 				Rect2i usable = screen_get_usable_rect(screen_id);
 
-				window.maximized = false;
-				window.minimized = false;
-				window.fullscreen = false;
+				if (!_is_offline_mode()) {
+					window.maximized = false;
+					window.minimized = false;
+					window.fullscreen = false;
 
-				if (IsIconic(hWnd)) {
-					window.minimized = true;
-				} else if (IsZoomed(hWnd)) {
-					window.maximized = true;
+					if (IsIconic(hWnd)) {
+						window.minimized = true;
+					} else if (IsZoomed(hWnd)) {
+						window.maximized = true;
 
-					// If maximized_window_size == screen_size add 1px border to prevent switching to exclusive_fs.
-					if (!window.maximized_fs && window.borderless && window_rect.position == screen_position && window_rect.size == screen_size) {
-						// Window (borderless) was just maximized and the covers the entire screen.
-						window.maximized_fs = true;
+						// If maximized_window_size == screen_size add 1px border to prevent switching to exclusive_fs.
+						if (!window.maximized_fs && window.borderless && window_rect.position == screen_position && window_rect.size == screen_size) {
+							// Window (borderless) was just maximized and the covers the entire screen.
+							window.maximized_fs = true;
+							_update_window_style(window_id, false);
+						}
+						if (window.borderless && (screen_size != usable.size || screen_position != usable.position)) {
+							Point2 pos = usable.position + _get_screens_origin();
+							Size2 size = usable.size;
+							MoveWindow(window.hWnd, pos.x, pos.y, size.width, size.height, TRUE);
+						}
+					} else if (window_rect.position == screen_position && window_rect.size == screen_size) {
+						window.fullscreen = true;
+					} else if (window.borderless && usable.position == window_rect.position && usable.size == window_rect.size) {
+						window.maximized = true;
+					}
+
+					if (window.maximized_fs && !window.maximized) {
+						// Window (maximized and covering fullscreen) was just non-maximized.
+						window.maximized_fs = false;
 						_update_window_style(window_id, false);
 					}
-					if (window.borderless && (screen_size != usable.size || screen_position != usable.position)) {
-						Point2 pos = usable.position + _get_screens_origin();
-						Size2 size = usable.size;
-						MoveWindow(window.hWnd, pos.x, pos.y, size.width, size.height, TRUE);
-					}
-				} else if (window_rect.position == screen_position && window_rect.size == screen_size) {
-					window.fullscreen = true;
-				} else if (window.borderless && usable.position == window_rect.position && usable.size == window_rect.size) {
-					window.maximized = true;
-				}
-
-				if (window.maximized_fs && !window.maximized) {
-					// Window (maximized and covering fullscreen) was just non-maximized.
-					window.maximized_fs = false;
-					_update_window_style(window_id, false);
 				}
 
 				if (!window.minimized) {
@@ -6803,7 +6910,7 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 				}
 
 				// Update cursor clip region after window rect has changed.
-				if (mouse_mode == DisplayServerEnums::MOUSE_MODE_CAPTURED || mouse_mode == DisplayServerEnums::MOUSE_MODE_CONFINED || mouse_mode == DisplayServerEnums::MOUSE_MODE_CONFINED_HIDDEN) {
+				if (!_is_offline_mode() && (mouse_mode == DisplayServerEnums::MOUSE_MODE_CAPTURED || mouse_mode == DisplayServerEnums::MOUSE_MODE_CONFINED || mouse_mode == DisplayServerEnums::MOUSE_MODE_CONFINED_HIDDEN)) {
 					RECT crect;
 					GetClientRect(window.hWnd, &crect);
 					crect.right -= off.x;
@@ -7041,7 +7148,7 @@ void DisplayServerWindows::_process_activate_event(DisplayServerEnums::WindowID 
 	if (wd.activate_state == WA_ACTIVE || wd.activate_state == WA_CLICKACTIVE) {
 		last_focused_window = p_window_id;
 		_set_mouse_mode_impl(mouse_mode);
-		if (!IsIconic(wd.hWnd)) {
+		if (!_is_offline_mode() && !IsIconic(wd.hWnd)) {
 			SetFocus(wd.hWnd);
 		}
 		wd.window_focused = true;
@@ -7278,6 +7385,8 @@ void DisplayServerWindows::_update_tablet_ctx(const String &p_old_driver, const 
 }
 
 Error DisplayServerWindows::_create_window(DisplayServerEnums::WindowID p_window_id, DisplayServerEnums::WindowMode p_mode, uint32_t p_flags, const Rect2i &p_rect, bool p_exclusive, DisplayServerEnums::WindowID p_transient_parent, HWND p_parent_hwnd, bool p_no_redirection_bitmap) {
+	ERR_FAIL_COND_V_MSG(_is_offline_mode() && p_mode == DisplayServerEnums::WINDOW_MODE_EXCLUSIVE_FULLSCREEN, ERR_UNAVAILABLE, "Exclusive fullscreen is not supported with --offline.");
+
 	DWORD dwExStyle;
 	DWORD dwStyle;
 
@@ -7308,6 +7417,11 @@ Error DisplayServerWindows::_create_window(DisplayServerEnums::WindowID p_window
 			WindowRect.right = screen_rect.position.x + screen_rect.size.x + off.x;
 			WindowRect.top = screen_rect.position.y;
 			WindowRect.bottom = screen_rect.position.y + screen_rect.size.y + off.y;
+		} else if (_is_offline_mode() && p_mode == DisplayServerEnums::WINDOW_MODE_MAXIMIZED) {
+			WindowRect.left = usable_rect.position.x;
+			WindowRect.right = usable_rect.position.x + usable_rect.size.x;
+			WindowRect.top = usable_rect.position.y;
+			WindowRect.bottom = usable_rect.position.y + usable_rect.size.y;
 		} else {
 			Rect2i srect = screen_get_usable_rect(rq_screen);
 			Point2i wpos = p_rect.position;
@@ -7368,7 +7482,9 @@ Error DisplayServerWindows::_create_window(DisplayServerEnums::WindowID p_window
 				// processed in the window proc
 				reinterpret_cast<void *>(&wd));
 		if (!wd.hWnd) {
-			MessageBoxW(nullptr, L"Window Creation Error.", L"ERROR", MB_OK | MB_ICONEXCLAMATION);
+			if (!_is_offline_mode()) {
+				MessageBoxW(nullptr, L"Window Creation Error.", L"ERROR", MB_OK | MB_ICONEXCLAMATION);
+			}
 			windows.erase(id);
 			ERR_FAIL_V_MSG(ERR_CANT_CREATE, "Failed to create Windows OS window.");
 		}
@@ -7395,7 +7511,7 @@ Error DisplayServerWindows::_create_window(DisplayServerEnums::WindowID p_window
 			}
 		}
 
-		if (p_mode == DisplayServerEnums::WINDOW_MODE_FULLSCREEN || p_mode == DisplayServerEnums::WINDOW_MODE_EXCLUSIVE_FULLSCREEN) {
+		if (p_mode == DisplayServerEnums::WINDOW_MODE_FULLSCREEN || p_mode == DisplayServerEnums::WINDOW_MODE_EXCLUSIVE_FULLSCREEN || (_is_offline_mode() && p_mode == DisplayServerEnums::WINDOW_MODE_MAXIMIZED)) {
 			// Save initial non-fullscreen rect.
 			Rect2i srect = screen_get_usable_rect(rq_screen);
 			Point2i wpos = p_rect.position;

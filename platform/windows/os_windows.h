@@ -126,6 +126,11 @@ class OS_Windows : public OS {
 
 	HashMap<void *, String> temp_libraries;
 
+	using SetProcessInformationPtr = BOOL(WINAPI *)(HANDLE, PROCESS_INFORMATION_CLASS, LPVOID, DWORD);
+	SetProcessInformationPtr set_process_information = nullptr;
+	bool offline_power_throttling_override = false;
+
+	void _finalize_offline_mode();
 	void _remove_temp_library(void *p_library_handle);
 	String _get_default_fontname(const String &p_font_name) const;
 	DWRITE_FONT_WEIGHT _weight_to_dw(int p_weight) const;
@@ -142,6 +147,7 @@ class OS_Windows : public OS {
 	// functions used by main to initialize/deinitialize the OS
 protected:
 	virtual void initialize() override;
+	virtual Error initialize_offline_mode() override;
 
 	virtual void set_main_loop(MainLoop *p_main_loop) override;
 	virtual void delete_main_loop() override;

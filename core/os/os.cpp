@@ -152,6 +152,14 @@ void OS::alert(const String &p_alert, const String &p_title) {
 	fprintf(stderr, "%s: %s\n", p_title.utf8().get_data(), p_alert.utf8().get_data());
 }
 
+Error OS::initialize_offline_mode() {
+	return ERR_UNAVAILABLE;
+}
+
+bool OS::is_offline_mode() const {
+	return _offline_mode;
+}
+
 void OS::set_low_processor_usage_mode(bool p_enabled) {
 	low_processor_usage_mode = p_enabled;
 }

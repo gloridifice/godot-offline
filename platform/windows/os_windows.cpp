@@ -247,6 +247,10 @@ BOOL WINAPI HandlerRoutine(_In_ DWORD dwCtrlType) {
 }
 
 void OS_Windows::alert(const String &p_alert, const String &p_title) {
+	if (is_offline_mode()) {
+		printerr("%s: %s\n", p_title.utf8().get_data(), p_alert.utf8().get_data());
+		return;
+	}
 	MessageBoxW(nullptr, (LPCWSTR)(p_alert.utf16().get_data()), (LPCWSTR)(p_title.utf16().get_data()), MB_OK | MB_ICONEXCLAMATION | MB_TASKMODAL);
 }
 
@@ -345,6 +349,62 @@ void OS_Windows::initialize() {
 	FileAccessWindows::initialize();
 }
 
+Error OS_Windows::initialize_offline_mode() {
+	if (_offline_mode) {
+		return OK;
+	}
+
+	HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
+	if (!kernel32) {
+		printerr("--offline: unable to access kernel32.dll (Win32 error %lu).\n", GetLastError());
+		return ERR_UNAVAILABLE;
+	}
+
+	set_process_information = reinterpret_cast<SetProcessInformationPtr>(GetProcAddress(kernel32, "SetProcessInformation"));
+	if (!set_process_information) {
+		printerr("--offline: SetProcessInformation is unavailable (Win32 error %lu).\n", GetLastError());
+		return ERR_UNAVAILABLE;
+	}
+
+	PROCESS_POWER_THROTTLING_STATE state = {};
+	state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+	state.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+	state.StateMask = 0;
+
+#ifdef TESTS_ENABLED
+	bool applied = !has_environment("GODOT_TEST_OFFLINE_HIGH_QOS_FAILURE") && set_process_information(GetCurrentProcess(), ProcessPowerThrottling, &state, sizeof(state));
+	if (!applied && has_environment("GODOT_TEST_OFFLINE_HIGH_QOS_FAILURE")) {
+		SetLastError(ERROR_ACCESS_DENIED);
+	}
+#else
+	bool applied = set_process_information(GetCurrentProcess(), ProcessPowerThrottling, &state, sizeof(state));
+#endif
+	if (!applied) {
+		printerr("--offline: failed to disable process execution-speed throttling (Win32 error %lu).\n", GetLastError());
+		return ERR_UNAVAILABLE;
+	}
+
+	offline_power_throttling_override = true;
+	_offline_mode = true;
+	return OK;
+}
+
+void OS_Windows::_finalize_offline_mode() {
+	if (!offline_power_throttling_override) {
+		_offline_mode = false;
+		return;
+	}
+
+	PROCESS_POWER_THROTTLING_STATE state = {};
+	state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+	if (!set_process_information || !set_process_information(GetCurrentProcess(), ProcessPowerThrottling, &state, sizeof(state))) {
+		printerr("--offline: failed to restore system-managed execution-speed policy (Win32 error %lu).\n", GetLastError());
+	}
+
+	offline_power_throttling_override = false;
+	_offline_mode = false;
+}
+
 void OS_Windows::delete_main_loop() {
 	memdelete(main_loop);
 	main_loop = nullptr;
@@ -381,6 +441,8 @@ void OS_Windows::finalize() {
 }
 
 void OS_Windows::finalize_core() {
+	_finalize_offline_mode();
+
 	while (!temp_libraries.is_empty()) {
 		_remove_temp_library(temp_libraries.last()->key);
 	}
@@ -2967,6 +3029,7 @@ OS_Windows::OS_Windows(HINSTANCE _hInstance) {
 }
 
 OS_Windows::~OS_Windows() {
+	_finalize_offline_mode();
 	WinRTUtils::cleanup();
 	CoUninitialize();
 }

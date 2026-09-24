@@ -528,6 +528,8 @@ class DisplayServerWindows : public DisplayServer {
 	Point2i _get_screens_origin() const;
 
 	Vector2i _get_screen_expand_offset(int p_screen) const;
+	bool _is_offline_mode() const;
+	void _show_window(HWND p_window, int p_command) const;
 
 	enum class WinKeyModifierMask {
 		ALT_GR = (1 << 1),

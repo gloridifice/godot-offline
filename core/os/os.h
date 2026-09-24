@@ -126,10 +126,12 @@ protected:
 	HasServerFeatureCallback has_server_feature_callback = nullptr;
 	bool _separate_thread_render = false;
 	bool _silent_crash_handler = false;
+	bool _offline_mode = false;
 
 	// Functions used by Main to initialize/deinitialize the OS.
 
 	virtual void initialize() = 0;
+	virtual Error initialize_offline_mode();
 	virtual void initialize_joypads() = 0;
 
 	virtual void set_main_loop(MainLoop *p_main_loop) = 0;
@@ -199,6 +201,8 @@ public:
 	virtual Error open_dynamic_library(const String &p_path, void *&p_library_handle, GDExtensionData *p_data = nullptr) { return ERR_UNAVAILABLE; }
 	virtual Error close_dynamic_library(void *p_library_handle) { return ERR_UNAVAILABLE; }
 	virtual Error get_dynamic_library_symbol_handle(void *p_library_handle, const String &p_name, void *&p_symbol_handle, bool p_optional = false) { return ERR_UNAVAILABLE; }
+
+	bool is_offline_mode() const;
 
 	virtual void set_low_processor_usage_mode(bool p_enabled);
 	virtual bool is_in_low_processor_usage_mode() const;
