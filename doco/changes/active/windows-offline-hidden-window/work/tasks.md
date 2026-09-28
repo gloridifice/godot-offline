@@ -1,8 +1,10 @@
 # 执行任务
 
-当前实施已按用户要求暂停。所有任务仍保持未完成：已有源码改动尚未完成编译、审查和运行验收，不能按部分实现勾选验收任务。
+首轮发现的 F1/F2 已修复，修复回归 33/33 通过。Windows 编辑器构建、CLI、OpenGL/Vulkan 和编辑器启动已实测；Present、MCP 等必测项仍未完成。所有任务保持未勾选，不能按部分通过勾选完整验收任务。
 
-## 暂停时进度
+详细命令、环境、矩阵与复现证据见 [验收记录](acceptance.md)。
+
+## 当前进度
 
 ### 已完成的实现草案
 
@@ -11,18 +13,22 @@
 - 在 `DisplayServerWindows` 增加隐藏模式门控草案：移除 `WS_VISIBLE`，限制显示、激活、焦点、鼠标捕获/裁剪/warp、独占全屏、进程嵌入和若干原生交互入口。
 - 离线模式下，Windows alert 改为日志；文件对话框按取消返回；其他原生对话框和若干可见系统 UI 返回不可用。
 
+### 已修复的验收缺陷
+
+- F1：有效 headless 检查移到 `setup()` 中、服务层扩展注册之前；三条原崩溃路径均正常退出 1，无扩展清理或泄漏错误。
+- F2：offline 原生样式移除 `WS_MINIMIZE`，保留 Godot 逻辑最小化及不可绘制状态；两后端的初始最小化、连续两次最小化恢复均通过，恢复后的尺寸和图像有效。
+
 ### 尚未完成或待复核
+- 原生嵌入 feature 在隐藏运行时返回 false；GameView、EditorRun 的实际子进程/重启和偏好保持仍未验收，不能仅由 feature 查询推导通过。
+- 已新增[测试入口及夹具](../../../../../tests/platform/windows/offline/run_acceptance.py)，包括确定性 2D/3D 场景、启动前窗口监控和图像断言；Camera2D、隔离夹具、策略单元测试及失败注入执行仍缺失。源码已有 `TESTS_ENABLED` 限定的 HighQoS 失败注入入口，本轮未启用它。
+- 尚未构建模板或 .NET 编辑器；PresentMon 退出码 1 且没有 CSV，实际 Present 证据仍缺失。MCP 三种截图工具均未调用。
 
-- `WM_WINDOWPOSCHANGED`、模式/几何状态和所有 Win32 显示入口仍需逐项静态审查，当前代码不能视为已证明无闪窗。
-- GameView 仅核对了共享参数转发，尚未完成离线模式下禁用 `--wid` 注入、父进程嵌入和焦点恢复的完整改动。
-- 尚未增加参数单元测试、窗口监控、确定性场景夹具、HighQoS 失败注入和图像断言工具。
-- 尚未构建模板或 .NET 编辑器，也未运行真实窗口/GPU、Present、普通模式回归及 Godot-MCP 三种截图验收。
+### 构建与实测
 
-### 构建暂停点
-
-- 默认 Windows 编辑器构建受本地 Direct3D 12 SDK 和 AccessKit 依赖缺失阻塞。
-- 改用 `scons platform=windows target=editor dev_build=yes use_mingw=yes d3d12=no accesskit=no -j8` 后已进入大规模编译，修改过的多个编译单元未出现已观察到的编译错误，但命令在完成链接前被中止，不能据此宣称构建通过。
-- 用户要求暂停后已终止本轮 SCons/Python 构建进程。恢复时应先复核当前 diff，再续跑上述构建并确认最终退出码。
+- `python -m SCons platform=windows target=editor dev_build=yes use_mingw=yes d3d12=no accesskit=no -j8`：本轮已完成链接，退出码 0。
+- 默认 D3D12/AccessKit 依赖仍缺失，本轮未验证这些配置；ANGLE 也缺少依赖。
+- 修复回归：CLI 21/21；OpenGL 与 Vulkan 各 5/5（含新增初始最小化）；隐藏编辑器和 Project Manager 启动 2/2。完整矩阵与未测范围见验收记录。
+- 本轮仅修复 F1/F2、强化回归测试并更新记录，没有自动提交或推送。
 
 ## 1. 验证环境与夹具
 
@@ -38,10 +44,14 @@
 ## 2. 引擎实现
 
 - [ ] 2.1 实现 `--offline` 解析、平台状态和 HighQoS 生命周期
+  - Blocked: none
+  - Verification: F1 已修复并复测；HighQoS 失败和清理仍待验收。
   - Design: [API 与生命周期](implement.md#3-apis-and-data-model)、[启动解析](implement.md#41-启动解析)
   - Acceptance: 帮助及无值参数生效，重复幂等，用户参数区不影响模式；显式/隐含 headless、dummy、wid 冲突顺序无关。非 Windows 拒绝。HighQoS 在首个图形初始化前申请，失败非零退出并带 Win32 错误；正常/失败清理释放覆盖，普通模式不受影响。见 [S1](specs/offline-window-mode.md#s1-启动与参数)、[S4](specs/offline-window-mode.md#s4-highqos-与失败)、[S6](specs/offline-window-mode.md#s6-回归与平台边界)。
 
 - [ ] 2.2 实现 Windows 原生窗口显示、样式、模式及输入副作用门控
+  - Blocked: none
+  - Verification: F2 已修复并复测；其他未覆盖窗口路径仍需验证。
   - Dependencies: 2.1
   - Design: [窗口算法](implement.md#42-原生显示门控)
   - Acceptance: 创建、回退重建、样式修改、最大化/普通全屏/恢复、换屏和子窗口均不闪窗；不抢前台、裁剪或移动桌面鼠标。维护有效几何与逻辑模式，保留原有非最小化可绘制性；不调用 Window.hide 或替换渲染目标。独占全屏明确拒绝。见 [S2](specs/offline-window-mode.md#s2-窗口生命周期)、[S3](specs/offline-window-mode.md#s3-绘制与截图基础)、[S6](specs/offline-window-mode.md#s6-回归与平台边界)。
@@ -59,6 +69,7 @@
 ## 3. 实际验证
 
 - [ ] 3.1 完成 CLI/策略单元测试与 Windows 原生图形集成验证
+  - Blocked: Present 证据缺失；模板、子进程和其他失败路径仍未完成，F1/F2 已修复。
   - Dependencies: 1.2, 2.1, 2.2, 2.3, 2.4
   - Design: [渲染边界](implement.md#45-渲染与截图)、[验证方案](implement.md#6-verification-and-documentation-impact)
   - Acceptance: 构建普通 Windows 编辑器与模板，执行 [S1–S6](specs/offline-window-mode.md#acceptance-scenarios)。覆盖仅测试可用的 HighQoS 失败注入、初始化错误、窗口操作及参数组合。项目主场景/指定场景均输出新帧内部截图和实际图形提交/Present 证据，所有本机可用后端记录实际选择及回退。没有 offline 时正常显示、嵌入和 headless 的基线不回归；不能用 mock 测试代替 GPU/窗口实测。
@@ -106,4 +117,20 @@
 - `scons platform=windows target=editor dev_build=yes use_mingw=yes d3d12=no accesskit=no -j8`：编译已推进，但在最终链接和退出码产生前按要求中止；结果记为未完成，不记为通过。
 - 未执行 GUI/GPU 运行、窗口可见性监控、模板构建、.NET 构建、MCP 连接或截图调用，也未安装插件。
 
-所有任务继续保持未勾选。现有源码是待续工作的实现草案，机械检查和部分编译进度不代表设计语义、无闪窗要求或运行验收已经通过。
+首轮验收新增执行：
+
+- Windows 编辑器构建：退出码 0；`run_acceptance.py --group cli`：退出码 1（18/21）；`--group graphics --backend opengl3` / `vulkan`：均退出码 1（各 3/4）；`--group editor`：退出码 0（2/2）。完整命令和证据见 [acceptance.md](acceptance.md)。
+- 同后端可见/隐藏内部 PNG 像素一致，标记从红变绿；已用 read 查看可见基线和隐藏截图。隐藏用例无目标显示/前台事件，运行期 HighQoS 为 `ControlMask=1, StateMask=0`。
+- PresentMon 尝试失败，无 CSV；未执行任何 MCP 截图，不将普通内部截图冒充 MCP 通过。
+- 测试脚本的 `py_compile` 检查、记录验收文档前的 `git diff --check`：通过。
+- 首轮文档更新后的最终检查曾因 Git Bash 启动故障无法执行，与 F1 引擎失败分开记录。本轮 shell 已能执行命令。
+
+F1/F2 修复回归执行：
+
+- 同选项增量构建：退出码 0，约 200 秒。
+- `run_acceptance.py --group all --backend opengl3`：退出码 0，28/28；`--group graphics --backend vulkan`：退出码 0，5/5。命令及新旧证据位置见 [acceptance.md](acceptance.md)。
+- 拒绝路径正常退出；初始和重复最小化时 `Window.can_draw()` 为 false，恢复后为 true，客户区与 PNG 尺寸正确。隐藏用例无目标显示/前台事件，两后端恢复后的 PNG 已查看。
+- 修改的两份 C++ 文件通过 `clang-format --dry-run --Werror`；测试脚本通过 `py_compile`；`git diff --check` 通过。
+- `doco check windows-offline-hidden-window --no-interactive`：机械检查通过；完整任务仍未完成，Present 等验收缺口保持记录。
+
+所有任务继续保持未勾选；编译成功与部分用例通过不代表完整窗口、失败清理、Present 或 MCP 验收通过。

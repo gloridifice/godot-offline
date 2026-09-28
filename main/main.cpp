@@ -2824,6 +2824,16 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 	GLOBAL_DEF_NOVAL(PropertyInfo(Variant::STRING, "display/display_server/driver.visionos", PROPERTY_HINT_ENUM, "default,visionOS,headless"), "default");
 	GLOBAL_DEF_NOVAL(PropertyInfo(Variant::STRING, "display/display_server/driver.macos", PROPERTY_HINT_ENUM, "default,macos,headless"), "default");
 
+	// Reject implicit headless modes before setup2() registers server-level extensions.
+	// The setup() error path only tears down core-level initialization.
+	if (OS::get_singleton()->is_offline_mode()) {
+		String effective_display_driver = display_driver.is_empty() ? String(GLOBAL_GET("display/display_server/driver")) : display_driver;
+		if (effective_display_driver == NULL_DISPLAY_DRIVER) {
+			OS::get_singleton()->print("Error: --offline cannot use the headless display driver. Aborting.\n");
+			goto error;
+		}
+	}
+
 	GLOBAL_DEF_RST_NOVAL("audio/driver/driver", AudioDriverManager::get_driver(0)->get_name());
 	if (audio_driver.is_empty()) { // Specified in project.godot.
 		if (project_manager) {
@@ -3293,10 +3303,6 @@ Error Main::setup2(bool p_show_boot_logo) {
 
 		if (display_driver.is_empty()) {
 			display_driver = GLOBAL_GET("display/display_server/driver");
-		}
-		if (OS::get_singleton()->is_offline_mode() && display_driver == NULL_DISPLAY_DRIVER) {
-			ERR_PRINT("--offline cannot use the headless display driver.");
-			return ERR_INVALID_PARAMETER;
 		}
 
 		int display_driver_idx = -1;

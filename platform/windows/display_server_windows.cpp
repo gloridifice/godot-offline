@@ -2761,7 +2761,9 @@ void DisplayServerWindows::_get_window_style(bool p_main_window, bool p_initiali
 	}
 
 	if (_is_offline_mode()) {
-		r_style &= ~WS_VISIBLE;
+		// Keep minimization logical: a native minimized HWND loses its client area,
+		// and the suppressed ShowWindow(SW_RESTORE) cannot restore it.
+		r_style &= ~(WS_VISIBLE | WS_MINIMIZE);
 	}
 
 	r_style |= WS_CLIPCHILDREN | WS_CLIPSIBLINGS;

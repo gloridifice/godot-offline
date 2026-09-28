@@ -1,0 +1,17 @@
+; Deterministic fixture copied to a temporary directory by run_acceptance.py.
+config_version=5
+
+[application]
+config/name="Offline Acceptance"
+run/main_scene="res://main.tscn"
+config/use_custom_user_dir=true
+config/custom_user_dir_name="godot-offline-acceptance"
+
+[display]
+window/size/viewport_width=640
+window/size/viewport_height=480
+window/subwindows/embed_subwindows=false
+
+[rendering]
+renderer/rendering_method="gl_compatibility"
+environment/defaults/default_clear_color=Color(0.04, 0.06, 0.1, 1)

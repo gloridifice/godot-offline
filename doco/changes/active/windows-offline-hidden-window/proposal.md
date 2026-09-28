@@ -6,7 +6,7 @@
 
 现有 `--headless` 选择 headless 显示驱动和 dummy 渲染，不能替代本功能。`--offline` 在本变更中指 hidden-window mode，不表示断网；Godot-MCP 等本地通信必须继续可用。
 
-本变更依据 Godot 4.8-dev、`ca871ccc9c` 的源码调研提出。当前尚未实现或完成 Windows/GPU 实测。
+本变更依据 Godot 4.8-dev、`ca871ccc9c` 的源码调研提出。当前已有实现草案，首轮 Windows/GPU 验收发现的两个缺陷已修复并通过回归；完整交付验收仍未完成。
 
 ## Scope and acceptance
 
@@ -47,4 +47,4 @@
 
 Pending — not completed.
 
-仅创建变更设计及验收计划。引擎实现、Windows 运行验证和 Godot-MCP 三项截图验收均待执行；MCP/.NET 环境不可用时应记录阻塞，不将截图能力标记为已验证。
+实现草案 `536d909fe5` 及后续修复已成功构建 Windows 编辑器。隐式 headless 拒绝后异常退出、最小化恢复后尺寸归零两处问题已修复，33 个回归用例通过；覆盖 CLI、OpenGL/Vulkan 隐藏主场景与指定场景、窗口生命周期和编辑器/Project Manager 启动。Present 证据、模板、编辑器子进程及 .NET/MCP 三项截图验收仍未完成。详见 [验收记录](work/acceptance.md)，不得以内部截图结果代替 MCP 验收。
